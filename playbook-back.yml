@@ -68,7 +68,7 @@
       become: yes  # Permite que a tarefa seja executada como usuário privilegiado (sudo)
       become_user: ubuntu  # Define o usuário para executar a tarefa (ubuntu)
       git:
-        repo: 'git@github.com:Everton-WS/apollo23-java.git'  # URL do repositório Git
+        repo: 'git@github.com:EverWS/apollo23-java.git'  # URL do repositório Git
         dest: /home/ubuntu/app  # Diretório de destino para o clone
         version: main  # Ramo (branch) a ser clonado
         accept_hostkey: yes  # Aceita automaticamente a chave do host Git

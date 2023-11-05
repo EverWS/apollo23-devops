@@ -1,0 +1,176 @@
+# Fluxo de trabalho básico de provisionar a Instância AWS e a Aplicação para Hackweek
+name: apollo23-hackweek-action
+
+# Controles de execução deste fluxo de trabalho
+on:
+  # Aciona este fluxo de trabalho em eventos de push ou pull request na branch "main"
+  push:
+    branches: [ "main" ]
+  # Serve para configuração de disparo manual deste fluxo de trabalho
+  workflow_dispatch:
+
+# Variáveis configuradas no Secrets
+env: 
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_DEFAULT_REGION: 'us-east-1'
+
+# Sequencia de execução do fluxo de trabalho
+jobs:
+  # Fluxo de trabalho do único job chamado "build"
+  build:
+    # Tipo de runner o qual o job é executado
+    runs-on: ubuntu-latest
+    
+    # Sequências de tarefas a serem executadas
+    steps:
+
+      # Faz o checkout do repositório em $GITHUB_WORKSPACE e assim o job o acessa
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Cria um Bucket S3 AWS para guardar o arquivo terraform.tfstate
+      - name: Create Bucket S3
+        run: aws s3api create-bucket --bucket apollo23-hackweek-state --region us-east-1
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: 'us-east-1'
+      
+      # Configura as chaves SSH na instancia provisionada
+      - name: Setup SSH Keys
+        run: |
+          eval `ssh-agent -s`
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
+          chmod 600 ~/.ssh/id_rsa
+          chmod 644 ~/.ssh/id_rsa.pub
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+      # Configura o Terraform
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v1
+        with:
+          terraform_wrapper: false
+
+      # Comando para inicializar o Terraform
+      - name: Terraform Init
+        env:
+          TF_VAR_db_username: ${{ secrets.TF_VAR_db_username }}
+          TF_VAR_db_password: ${{ secrets.TF_VAR_db_password }}
+        run: terraform init
+      
+      # Comando que iŕa aplicar o Terraform
+      - name: Terraform Apply
+        env:
+          TF_VAR_db_username: ${{ secrets.TF_VAR_db_username }}
+          TF_VAR_db_password: ${{ secrets.TF_VAR_db_password }}
+        run: terraform apply -auto-approve
+
+      # Define a saída instance_id do outputs.tf como Variável de Ambiente
+      - name: Set INSTANCE_ID environment variable
+        run: echo "instance_id=`terraform output -raw instance_id`" >> $GITHUB_ENV
+
+      # Define a saída instance_id do outputs.tf como Variável de Ambiente
+      - name: Set FRONTEND_ID environment variable
+        run: echo "frontend_id=`terraform output -raw frontend_id`" >> $GITHUB_ENV
+
+      # Tarefa que aguarda a instância backend ficar pronta
+      - name: Verificar status da instância EC2 backend
+        run: |
+          instance_id="${instance_id}"
+         
+          while true; do
+            status=$(aws ec2 describe-instance-status --instance-id $instance_id --query 'InstanceStatuses[0].InstanceStatus.Status' --output text)
+            system_status=$(aws ec2 describe-instance-status --instance-id $instance_id --query 'InstanceStatuses[0].SystemStatus.Status' --output text)
+
+            if [ "$status" == "ok" ] && [ "$system_status" == "ok" ]; then
+              echo "A instância possui 2/2 verificações aprovadas."
+              break  # Sai do loop quando a condição é atendida
+            else
+              echo "Aguardando instância estar com 2/2 verificações aprovadas..."
+              sleep 10
+            fi
+          done
+      
+      # Tarefa que aguarda a instância frontend ficar pronta
+      - name: Verificar status da instância EC2 frontend
+        run: |
+          frontend_id="${frontend_id}"
+         
+          while true; do
+            status=$(aws ec2 describe-instance-status --instance-id $frontend_id --query 'InstanceStatuses[0].InstanceStatus.Status' --output text)
+            system_status=$(aws ec2 describe-instance-status --instance-id $frontend_id --query 'InstanceStatuses[0].SystemStatus.Status' --output text)
+
+            if [ "$status" == "ok" ] && [ "$system_status" == "ok" ]; then
+              echo "A instância possui 2/2 verificações aprovadas."
+              break  # Sai do loop quando a condição é atendida
+            else
+              echo "Aguardando instância estar com 2/2 verificações aprovadas..."
+              sleep 10
+            fi
+          done
+
+      # Define a saída instance_ip do outputs.tf como Variável de Ambiente
+      - name: Set INSTANCE_IP environment variable
+        run: echo "instance_ip=`terraform output -raw instance_ip`" >> $GITHUB_ENV
+   
+      # Define a saída instance_ip do outputs.tf como Variável de Ambiente
+      - name: Set FRONTEND_IP environment variable
+        run: echo "frontend_ip=`terraform output -raw frontend_ip`" >> $GITHUB_ENV
+
+      # Configura o Python e a versão
+      - name: Setup Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+
+      # Instala o Ansible
+      - name: Install Ansible
+        run: pip install ansible
+          
+      # Cria de forma automatizada o arquivo inventory.ini do Ansible
+      - name: Create inventory Ansible
+        run: |
+          echo "[backend]" > inventory.ini
+          echo "apollo23_backend_vm ansible_host=${instance_ip}" >> inventory.ini
+          echo "" >> inventory.ini
+          echo "[frontend]" >> inventory.ini
+          echo "apollo23_frontend_vm ansible_host=${frontend_ip}" >> inventory.ini
+          echo "" >> inventory.ini  
+        
+      # Exibe o arquivo inventory.ini para verificação se está no formato adequado
+      - name: Display Ansible Inventory
+        run: cat inventory.ini
+          
+      - name: host key backend
+        run: ssh-keyscan ${instance_ip} >> ~/.ssh/known_hosts
+      
+      - name: host key frontend
+        run: ssh-keyscan ${frontend_ip} >> ~/.ssh/known_hosts
+
+      # Define a saída db_endpoint do outputs.tf como Variável de Ambiente
+      - name: Set DB_ENDPOINT with environment variable
+        run: echo "env_url=`terraform output -raw db_endpoint`" >> $GITHUB_ENV
+
+      # Display o de_endpoint
+      - name: Display db endpoint Set
+        run: |
+          echo "${env_url}" > endpoint_db
+          cat endpoint_db
+
+      # Executa o Playbook Backend
+      - name: Run Ansible Playbook Backend
+        run: ansible-playbook -i inventory.ini playbook-back.yml --limit "apollo23_backend_vm" --private-key ~/.ssh/id_rsa
+        env:
+          PROFILE: ${{ secrets.PROFILE }}
+          URL: ${{ env.env_url }}
+          DATABASE: ${{ secrets.DATABASE }}
+          USER: ${{ secrets.TF_VAR_db_username }}
+          PASSWORD: ${{ secrets.TF_VAR_db_password }}
+          SCHEMA: ${{ secrets.SCHEMA }}
+        
+      # Executa o Playbook Frontend
+      - name: Run Ansible Playbook Frontend
+        run : ansible-playbook -i inventory.ini playbook-front.yml --limit "apollo23_frontend_vm" --private-key ~/.ssh/id_rsa
