@@ -1,5 +1,5 @@
 # Apollo23 - Grupo 7
-![DevOps build CI/CD with Actions](https://github.com/Everton-WS/apollo23-devops/actions/workflows/apollo23.yml/badge.svg)
+[DevOps build CI/CD with Actions](https://github.com/Everton-WS/apollo23-devops/actions/workflows/apollo23.yml/badge.svg)
 
 Projeto do Grupo 7 - Apollo 23, da Hackweek do programa +Devs2Blu 2023.
 
